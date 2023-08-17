@@ -29,7 +29,7 @@ function [ time_stamp, ROI_names ] = vectorize_V200( varargin )
 %                 (y,1,z) is the left border of the x-y image at height z
 %                 (y,x,1) is the x-y image nearest to the objective
 %
-%   Supported input image file types: .tif
+%   Supported input image file type: .tif
 %
 % For in-line function calls that do not require manual interfacing (e.g. for writing wrapper
 % functions or for keeping a concise record of VECTORIZE function calls in a script file), see the
@@ -624,12 +624,12 @@ end % IF no optional input provided
                         ROI_names{ number_of_inputs_total } = [ '_', input_file_names{ file_index }( 1 : end - 4 )];
                         
                         file_extension = input_file_names{ file_index }( end - 3 : end );     
-                        
-                        if ~ strcmp( file_extension, '.tif' ) 
-                            
-                            error([ 'File path (', input_image_path, '), in OptionalInput pointed to file without ".tif" extension. Input file type must be .tif' ])
-    
-                        end
+%                         
+%                         if ~ strcmp( file_extension, '.tif' ) 
+%                             
+%                             error([ 'File path (', input_image_path, '), in OptionalInput pointed to file without ".tif" extension. Input file type must be .tif' ])
+%     
+%                         end
                         
                         if any( strcmp( input_file_names_temp{ file_index }, input_file_names_temp([ 1 : file_index - 1, file_index + 1 : end ])))
                             
@@ -674,33 +674,53 @@ end % IF no optional input provided
             if exist('mask_image','var')
 
                 disp([ 'Applying to the tiled image the mask found at ', [ optional_input( 1 : end - 4 ), '_mask.tif' ]])
+
+                disp('...Reassigning values outside of tiles to the average of the values inside the tiles.')
                 
                 mat2tif( mask_image, [ optional_input( 1 : end - 4 ), '_mask.tif' ]);
 
                 mask_image = logical( mask_image );
 
-                is_log_transforming_tiled_inputs = false ;
+                is_log_transforming_tiled_inputs = true ;
                 
                 if is_log_transforming_tiled_inputs
                 
-                    disp('Notice: performing log transform and normalization')
-
                     original_image = double( original_image );
 
     %                 % baseline correction
     %                 original_image( mask_image ) = original_image( mask_image ) - min( original_image( mask_image ));
 
-                    % data normalization
-                    original_image( ~ mask_image ) = 1e3 * (      original_image( ~ mask_image )  - min( original_image( ~ mask_image ))) ...
-                                                         / ( max( original_image( ~ mask_image )) - min( original_image( ~ mask_image )));                
+%                     % data normalization
+%                     original_image( ~ mask_image ) = 1e3 * (      original_image( ~ mask_image )  - min( original_image( ~ mask_image ))) ...
+%                                                          / ( max( original_image( ~ mask_image )) - min( original_image( ~ mask_image )));                
+%                     % data normalization % put z score of - 3 on 1 and z score of 0 on e / 2
+%                     original_image( ~ mask_image ) = 1 + ( exp( 1 ) - 1 ) ...
+%                                                        * (           original_image( ~ mask_image )             - quantile( original_image( ~ mask_image ), 0.95*0.0013 )) ...
+%                                                        / ( quantile( original_image( ~ mask_image ), 0.95*0.5 ) - quantile( original_image( ~ mask_image ), 0.95*0.0013 ));
+                    
+                    z_score_0_at_median_background    = quantile( original_image( ~ mask_image ), 0.95*0.5    );
+                    z_score_3_under_median_background = quantile( original_image( ~ mask_image ), 0.95*0.0013 );
+                    z_score_27_over_median_background = ( z_score_0_at_median_background - z_score_3_under_median_background ) * 10 ...
+                                                      +                                    z_score_3_under_median_background        ;
+    
+                    % data normalization % put median background at 1 and background z score of (30-3=) +27 on e
+                    original_image( ~ mask_image ) = 1 + ( exp( 1 ) - 1 ) ...
+                                                       * ( original_image( ~ mask_image ) - z_score_3_under_median_background ) ...
+                                                       / ( z_score_0_at_median_background - z_score_3_under_median_background ) ...
+                                                       / 10 ;
+                                                       ... / 5 ;
+                                                   
+                    original_image( original_image < 1 ) = 1 ;
 
-                    % data conditioning to stabilize the log
-                    original_image( ~ mask_image ) = original_image( ~ mask_image ) + median( original_image( ~ mask_image ));
-
-                    % log transform
-                    original_image(   mask_image ) = 1 ;
+%                     % data conditioning to stabilize the log
+%                     original_image( ~ mask_image ) = original_image( ~ mask_image ) + median( original_image( ~ mask_image ));
+% 
+%                     % log transform
+%                     original_image(   mask_image ) = 1 ;
 
                     original_image = log( original_image );
+
+                    disp(['Notice: performing normalization (',num2str(z_score_0_at_median_background),', ',num2str(z_score_27_over_median_background),')->(1,e), and log transform ->(0,1)'])
 
                     % setting the fill value to the average intensity of the images (in the region
                     % where they are defined/supported)
@@ -712,6 +732,8 @@ end % IF no optional input provided
 
                     original_image = uint16( original_image );
 
+                    
+                    
                 else
                     
                     original_image( mask_image ) = mean( original_image( ~ mask_image ));
@@ -848,7 +870,7 @@ if strcmp( new_batch, 'yes' )
         
         [ file, path ] = uigetfile( '*.tif', 'Please select one or more input .tif file.', 'MultiSelect', 'on');
         
-        if isnumeric( path ) || isnumeric( path ), error( 'No paths were collected by the folder selection interface.  Please retry selection.' ); end
+        if isnumeric( path ), error( 'No paths were collected by the folder selection interface.  Please retry selection.' ); end
         
         optional_input = fullfile( path, file );
             
@@ -2044,6 +2066,10 @@ for workflow_index = inputs_required
             else % ideal PSF assumed
                
                 microns_per_sigma_microscope_PSF = [ 0, 0, 0 ];
+
+                is_custom_PSF = false ;
+
+                if is_custom_PSF, disp('!!!! using custom PSF !!! : '), microns_per_sigma_microscope_PSF = [ 2, 2, 125 ], end % [ 2, 2, 250 ]                
                 
             end
                         
@@ -2939,18 +2965,44 @@ end % IF productive
 
 for ROI_index = ROI_index_range
     
+    path_to_original_data           = [     data_directory,        original_data_handle,                ROI_names{ ROI_index }]; % h5  file path    
+    path_to_energy_data             = [     data_directory,               energy_handle,                ROI_names{ ROI_index }]; % mat file path
+    path_to_vertices                = [   vector_directory,             vertices_handle,                ROI_names{ ROI_index }]; %  vectors path
+    path_to_vertex_features         = [ curation_directory,             vertices_handle, '_features',   ROI_names{ ROI_index },  '.mat'];
+            
     switch vertex_curation
         
         case { 'manual', 'auto', 'machine-manual', 'machine-auto', 'mutual edges' }
             
+            disp(['Performing ', vertex_curation, ' vertex curation on the image ', ROI_names{ ROI_index }( 2 : end ), '...' ])
+
             tic
             
-            path_to_energy_data             = [     data_directory,               energy_handle, ROI_names{ ROI_index }]; % mat file path        
-            path_to_original_data           = [     data_directory,        original_data_handle, ROI_names{ ROI_index }]; % h5  file path
-            path_to_vertices                = [   vector_directory,             vertices_handle, ROI_names{ ROI_index }]; %  vectors path
-            path_to_curated_vertices        = [   vector_directory, 'curated_', vertices_handle, ROI_names{ ROI_index }]; %  vectors path    
-            path_to_saved_curation          = [ curation_directory,             vertices_handle, ROI_names{ ROI_index }]; % logicals path
+            path_to_curated_vertices        = [   vector_directory, 'curated_', vertices_handle,                ROI_names{ ROI_index }]; %  vectors path    
+            path_to_saved_curation          = [ curation_directory,             vertices_handle,                ROI_names{ ROI_index }]; % logicals path        
+            path_to_vertex_foreground       = [ curation_directory,             vertices_handle, '_foreground', ROI_names{ ROI_index },  '.mat'];
 
+            path_to_machine_curator_1 = [ 'MLModels', filesep, 'TrainingSet2-laplacian-log_radius.h5' ]; % path relative to vectorization working directory % SAM 7/8/23 used in Longitudinal Stroke Recovery Publication
+%             path_to_machine_curator_1 = [ 'MLModels', filesep, 'TrainingSet1-laplacian-log_radius.h5' ]; % path relative to vectorization working directory
+% %             path_to_machine_curator_1 = 'MLModel_TrainingSet1-laplacian-log_radius.h5' ; % path relative to vectorization working directory
+% % %             path_to_machine_curator_1 = 'laplacian-log_radius.h5' ; % path relative to vectorization working directory
+% % % % % % % % % %             path_to_machine_curator_2 = 'laplacian-log_radius-gradient1-vesselness.h5' ;
+% % % % % % % % %             path_to_machine_curator_2 = 'vesselness.h5' ;
+% % % % % % % %             path_to_machine_curator_2 = 'MLModel_TrainingSet1-vesselness.h5' ;
+% % % % % % %             path_to_machine_curator_2 = 'MLModel_TrainingSet1-laplacian-log_radius-gradient_N-vesselness.h5' ;
+% % % % % %             path_to_machine_curator_2 = 'MLModel_TrainingSet1-gradient_N-vesselness.h5' ;
+% % % % %             path_to_machine_curator_2 = 'MLModel_TrainingSet1-gradient_N.h5' ;
+% % % %             path_to_machine_curator_2 = 'MLModel_TrainingSet1-gradient__.h5' ;
+% % %             path_to_machine_curator_2 = [ 'MLModels', filesep, 'TrainingSet1-gradient__.h5' ];
+% %             path_to_machine_curator_2 = [ 'MLModels', filesep, 'TrainingSet1-gradient__-log_radius.h5' ];
+%             path_to_machine_curator_2 = [ 'MLModels', filesep, 'TrainingSet2-gradient__-log_radius.h5' ];
+%             path_to_machine_curator_2 = [ 'MLModels', filesep, 'TrainingSet2-gradient__-log_radius-vesselness.h5' ];
+            path_to_machine_curator_2 = [ 'MLModels', filesep, 'TrainingSet2-gradient_N-log_radius-blobness.h5' ]; % SAM 7/8/23 used in Longitudinal Stroke Recovery Publication
+
+%             path_to_vertex_predictions      = [ curation_directory,                                             ROI_names{ ROI_index }( 2 : end ), '_predictions.mat']; % !!!!! align Mahdi's python code to match the naming convention here!!
+            path_to_vertex_predictions1      = [ curation_directory,             vertices_handle, '_features',  ROI_names{ ROI_index }, '_', path_to_machine_curator_1(1:end-3), '_predictions.mat']; % !!!!! align Mahdi's python code to match the naming convention here!!
+            path_to_vertex_predictions2      = [ curation_directory,             vertices_handle, '_features',  ROI_names{ ROI_index }, '_', path_to_machine_curator_2(1:end-3), '_predictions.mat']; % !!!!! align Mahdi's python code to match the naming convention here!!
+            
             original_file_info = h5info( path_to_original_data );
 
 %             original_image = h52mat( path_to_original_data );
@@ -2961,12 +3013,72 @@ for ROI_index = ROI_index_range
 
             load([ path_to_energy_data, '.mat' ])
             load(  path_to_vertices             )
-            load(  path_to_energy_settings      )
-                
+            load(  path_to_energy_settings      )         
+            
+            is_vertices_loaded = true ;
+            
         otherwise % do nothing
+
+            is_vertices_loaded = false ;
+    end
+
+    %% Feature extraction
+    if ~ exist( path_to_vertex_features, 'file' )
+
+        if ~ is_vertices_loaded,             load([ path_to_energy_data, '.mat' ])
+                                             load(  path_to_vertices             )
+                                             load(  path_to_energy_settings      )
+        end
+
+        disp(['Extracting vertex features for future machine curation training/deployment of the image ', ROI_names{ ROI_index }( 2 : end ),' (this may take a few minutes)...'])
+
+        [ laplacian, vesselness, energy, gradient_1, gradient_2, gradient_3, log_radius, is_cropped, axial_comp, blobness ] = vertex_feature_extractor( vertex_space_subscripts, vertex_scale_subscripts, path_to_original_data, lumen_radius_in_microns_range, microns_per_voxel, gaussian_to_ideal_ratio, spherical_to_annular_ratio, pixels_per_sigma_PSF );
+%             load(path_to_vertex_features, 'laplacian', 'gradient_1', 'gradient_2', 'gradient_3' )
+
+%             gradient__ = (   gradient_1 .^ 2          ...
+%                            + gradient_2 .^ 2          ...
+%                            + gradient_3 .^ 2 ) .^ 0.5 ;
+% 
+%             gradient_N = gradient__ ./ laplacian .^ 2 ;
+
+        gradient__ = gradient_1 .^ 2          ...
+                   + gradient_2 .^ 2          ...
+                   + gradient_3 .^ 2 ;
+
+        gradient_N = gradient__ ./ laplacian .^ 2 ;
+
+        save( path_to_vertex_features,  'laplacian',  ...
+                                        'vesselness', ...
+                                            'energy', ...
+                                        'gradient_1', ...
+                                        'gradient_2', ...
+                                        'gradient_3', ...
+                                        'log_radius', ...
+                                        'is_cropped', ...
+                                        'gradient__', ...
+                                        'gradient_N', ...
+                                        'axial_comp', ...
+                                          'blobness'  )
+%             save( path_to_vertex_features,   ...
+%                                             'gradient__', ...
+%                                             'gradient_N', ...
+%                                             '-append'  )
+
+%             figure, plot(vertex_energies, energy, 'o' )
+%             figure, plot(vertex_energies,gradient_1+gradient_2+gradient_3-vesselness,'o')
+%             figure, plot(vertex_energies,vesselness,'o')        
+%             figure, plot(vertex_energies,energy-laplacian,'o')
+%             % !!!!! plot these again with truth labeling (true=blue,red=false) !!!!!!
 
     end
 
+%     load( path_to_vertex_features, 'laplacian' )
+%                   vertex_energies = laplacian ; % normalizing the energies to the standard deviation! % SAM 10/13/22
+%     % !!! convert vertex energies vector into vertex features matrix (one feature per column) and
+%     % make these features selectable from a dropdown menu inside the curator for histogram display and thresholding purposes!, 
+%     % then just add the machine learner prediction to the list of features !!!!       
+
+    %% use cases
     isMachine = false;
     isManual = false;
     isAuto = false;
@@ -2992,28 +3104,85 @@ for ROI_index = ROI_index_range
             isManual = false ;
             
     end
-        
+
+    %% machine curation
     if isMachine
         
-        disp([ 'Running machine vertex_curation for image ', ROI_names{ ROI_index }( 2 : end )])            
+%         disp([ 'Running machine vertex_curation for image ', ROI_names{ ROI_index }( 2 : end )])            
+        
+%         if exist( path_to_vertex_features, 'file' ), delete( path_to_vertex_features ); end                
+        
+% %         if ~exist(path_to_vertex_features,'file')
+%             vertex_info_extractor({'uncurated'}, {'derivatives'}, {data_directory(1:end-5)}, path_to_vertex_features, ROI_index, time_stamp );
+% %         end
+%         
+%         load(path_to_vertex_features,'vertexFeaturePool')        
+        
+        %% machine curator prediction
+%         vertex_energies = - 1000 * vertexCuratorNetwork_V3(simpleFeatureArray(vertexFeaturePool)');
+%         %% !!!!!!!!!!!! need to retrain the curator network SAM 6/3/22
 
-        path_to_vertex_features = [ curation_directory, vertices_handle, '_featureSet_', ROI_names{ ROI_index }, '.mat'];
+        % !!!!!! need to call Mahdi's Python code here !!!!!!!!!!!!!!!!
+        % outvars = pyrunfile(file,outputs,pyName=pyValue) executes the code with one or more name-value pair arguments.            % Call a Python script that takes input arguments.
+            % 
+            % Create Python script addac.py from these statements. The script takes input arguments x and y and returns variable z.
+            % 
+            % def add(a,c):
+            %     b = a+c
+            %     return b
+            % 
+            % z = add(x,y)
+            % Pass values for x and y. Return the variable z in the MATLAB variable res.
+            % 
+            % res = pyrunfile("addac.py","z",x=3,y=2)
+            % res = 5
+
+%         predictions  = pyrunfile( "MLDeployment.py","predictions", feature_file = path_to_vertex_features  , ...
+%                                                                   curation_file = path_to_curated_vertices , ...
+%                                                                    machine_file = path_to_machine_curator_1, ...
+%                                                                 prediction_file = path_to_vertex_predictions );
+
+%         [ status, cmd_out ] = system(['python3 MLDeployment.py feature_file = path_to_vertex_features'  , ...
+%                                                              'curation_file = path_to_curated_vertices ', ...
+%                                                               'machine_file = path_to_machine_curator_1', ...
+%                                                            'prediction_file = path_to_vertex_predictions' ]);
+
+        disp([ 'Performing machine vertex curation/classification, generating vertex truth predictions from model (', path_to_machine_curator_1, ')...' ])
+
+        [ status, cmd_out ] = system([ 'python3 MLDeployment.py "', path_to_vertex_features  , '"' ...
+                                                              ' "', path_to_machine_curator_1, '"' ]);
+
+        load( path_to_vertex_predictions1, 'predictions' ); predictions1 = predictions ;
+
+        is_foreground = predictions1 > 0.5 ; % ??? could be moved below the next load of this file ???
         
-        if exist(path_to_vertex_features,'file'), delete( path_to_vertex_features ); end                
+        save( path_to_vertex_features, 'is_foreground', '-append' )
+
+        disp([ 'Performing machine vertex curation/classification, generating vertex truth predictions from model (', path_to_machine_curator_2, ') and multiplying with previous' ])
+
+        [ status, cmd_out ] = system([ 'python3 MLDeployment.py "', path_to_vertex_features  , '"' ...
+                                                              ' "', path_to_machine_curator_2, '"' ]);
+
+            load( path_to_vertex_predictions2, 'predictions' ); predictions2 = predictions ;
+
+%         predictions = ( predictions1 .* predictions2 .^ 3 ) .^ 0.25 ; % combine with .* analagous to Boolean &-operator        
+        predictions = ( predictions1 .* predictions2 ) .^ 0.5 ; % combine with .* analagous to Boolean &-operator
+% %         predictions = ( predictions1 .^ 3 .* predictions2 ) .^ 0.25 ; % combine with .* analagous to Boolean &-operator
+% % %         predictions = ( predictions1 .* predictions2 ) .^ 0.5 ; % combine with .* analagous to Boolean &-operator
+% % % %         predictions = ( predictions1 .* predictions2 .^ 3 ) .^ 0.25 ; % combine with .* analagous to Boolean &-operator
+% % % % %         predictions = predictions1 ;
         
-%         if ~exist(path_to_vertex_features,'file')
-            vertex_info_extractor({'uncurated'}, {'derivatives'}, {data_directory(1:end-5)}, path_to_vertex_features, ROI_index, time_stamp );
-%         end
-        
-        load(path_to_vertex_features,'vertexFeaturePool')        
-        
-        vertex_energies = - 1000 * vertexCuratorNetwork_V3(simpleFeatureArray(vertexFeaturePool)');
-        
+        vertex_energies = 1 - exp( predictions ); % to cancel the transform inside the vertex curators for display purposes, yielding - predictions'
+
+        % vertex_energies( ~ is_foreground ) = - eps ;
+
     end %IF isMachine
     
+    %% automated size exclusion curation
     if isManual || isAuto
         
-        disp([ 'Running automated size exclusion vertex_curation for image ', ROI_names{ ROI_index }( 2 : end )])            
+        disp( 'Painting the likeliness-sorted vertices into a blank image to render a non-overlapping subset. (Resolving vertex-vertex volume conflicts.)...' )
+%         Running automated size exclusion for image ', ROI_names{ ROI_index }( 2 : end )])            
         
         % !!!!!! save this result once, so we don't have to do it whenever opening curator
         % instead do a volume conflict test and select the best contrast object at conflicts
@@ -3026,12 +3195,49 @@ for ROI_index = ROI_index_range
         vertex_space_subscripts = vertex_space_subscripts( chosen_vertex_indices, : );
         vertex_scale_subscripts = vertex_scale_subscripts( chosen_vertex_indices    );
         vertex_energies         =         vertex_energies( chosen_vertex_indices    );
+        
+        if exist( path_to_vertex_features, 'file' ), save( path_to_vertex_features, 'chosen_vertex_indices', '-append' ), end
 
+        if exist( path_to_vertex_features, 'file' ) % SAM 9/27/22
+
+            if isMachine % SAM 4/12/23
+            
+                load( path_to_vertex_features, 'chosen_vertex_indices', 'is_foreground' )
+                
+                is_chosen = zeros( size( is_foreground ), 'logical' ); 
+                
+                is_chosen( chosen_vertex_indices ) = 1 ; 
+                
+                           chosen_vertex_indices = find( is_chosen & is_foreground ); 
+                           
+                foreground_vertices = is_foreground( is_chosen );
+                
+    %             save( path_to_vertex_foreground, 'chosen_vertex_indices', '-append' ), end
+    %         
+    %             axial_comp = axial_comp( is_foreground );
+    %             energy     =     energy( is_foreground );
+    % 
+    %             save( path_to_vertex_foreground, 'laplacian',  ...
+    %                                                               'vesselness', ...
+    %                                                               'energy',     ...
+    %                                                               'gradient_1', ...
+    %                                                               'gradient_2', ...
+    %                                                               'gradient_3', ...
+    %                                                               'log_radius', ...
+    %                                                               'is_cropped', ...
+    %                                                               'axial_comp', ...
+    %                                                               'chosen_vertex_indices' ) % this save is a waste of space but a calculated loss to facilitate smooth interfacing with Mahdi's script which is expecting a feature matrix with a chosen_vertex_indices variable to "filter" by anyway
+    
+                save( path_to_vertex_foreground, 'chosen_vertex_indices', 'foreground_vertices' ) % use displayed_vertices = displayed_vertices & foreground_vertices inside Mahdi's script upon loading the training set for the foreground network
+            
+            end                                         
+        end
     end % manual or auto
     
+    %% manual curation interface
     if isManual
         
-        disp([ 'Loading vertex_curation interface for image ', ROI_names{ ROI_index }( 2 : end )])            
+        disp( 'Loading graphical vertex curation interface for user input...' )
 
         [ vertex_energies, vertex_space_subscripts, vertex_scale_subscripts ]                   ...
                   = vertex_curator(                   vertex_energies, vertex_space_subscripts, ...
@@ -3043,78 +3249,86 @@ for ROI_index = ROI_index_range
 
     end %IF isManual
     
+    %% automatic curation
     if isAuto
             
-%         disp([ 'Running automated size exclusion vertex_curation for image ', ROI_names{ ROI_index }( 2 : end )])            
-%         
-%         if strcmp( vertex_curation, 'mutual edges' ) % !!!! failed method attempt SAM 5/21/21
-%             
-%             number_of_edges_per_vertex_for_curation = 2 ;
+
+%         positive_vertices = predictions > 0.5 ;
 % 
-%             % run the edge extraction step with only 2 edges per vertex
-%             max_edge_energy = 0 ;
-% 
-%             [ edges2vertices, ~,       ...
-%               edge_space_subscripts,   ...
-%               edge_scale_subscripts,   ...
-%               edge_energies          ] ...
-%                     = get_edges_V300( lumen_radius_in_microns_range, vertex_scale_subscripts, vertex_space_subscripts, ...
-%                                       3 / 4, number_of_edges_per_vertex_for_curation, max_edge_energy, ...
-%                                       data_directory, [ energy_handle, ROI_names{ ROI_index }]);
-%                                                      
-%             is_not_really_mutual_but_iterative_terminal = true ;
-%             
-%             if is_not_really_mutual_but_iterative_terminal
-% 
-%     %             load('curate vertices workspace.mat')
-% 
-%                 minimum_number_of_edges_finding_a_vertex = 1 ;
-% 
-%                 vertex_uniques = unique( edges2vertices( :, 1 ))';            
-% 
-%                 is_vertex_chosen          = zeros( 1, numel( vertex_scale_subscripts ), 'logical' );
-% 
-%                 is_vertex_chosen_previous = ones(  1, numel( vertex_scale_subscripts ), 'logical' );
-% 
-%                 is_vertex_unique_chosen = ones( size( vertex_uniques ), 'logical' );
-% 
-%                 while true
-% 
-%                     is_vertex_chosen( vertex_uniques ) = is_vertex_unique_chosen ;     
-% 
-%                     % identify deleted vertices, remove edges that use them as origin vertices from the
-%                     % edges2vertices look up table
-%                     vertex_unique_eliminated = find( ~ is_vertex_chosen & is_vertex_chosen_previous );
-% 
-%                     is_vertex_chosen_previous = is_vertex_chosen ;
-% 
-%                     for vertex_unique = vertex_unique_eliminated
-% 
-%                         edges2vertices( edges2vertices( :, 2 ) == vertex_unique, 2 ) = 0 ;
-% 
-%                     end
-% 
-%                     edge_energies(  edges2vertices( :, 2 ) == 0, : ) = [ ];
-% 
-%                     edges2vertices( edges2vertices( :, 2 ) == 0, : ) = [ ];
-% 
-%                     vertex_uniques = vertex_uniques( is_vertex_unique_chosen );
-% 
-%                     is_looping = ~ isempty( vertex_unique_eliminated );
-% 
-%                     if ~ is_looping, break, end
-% 
-%                     is_vertex_unique_chosen = sum( vertex_uniques == edges2vertices( :, 1 )) ...
-%                                             >= minimum_number_of_edges_finding_a_vertex ;
-% 
-%                 end            
-%             end % IF mutual edges is misnomer            
-%             
-%             vertex_space_subscripts = vertex_space_subscripts( vertex_uniques, : );
-%             vertex_scale_subscripts = vertex_scale_subscripts( vertex_uniques    );
-%             vertex_energies         =         vertex_energies( vertex_uniques    );            
-%             
-%         end % IF 'mutual edges'
+%         vertex_energies         = vertex_energies(         positive_vertices );
+%         vertex_space_subscripts = vertex_space_subscripts( positive_vertices );
+%         vertex_scale_subscripts = vertex_scale_subscripts( positive_vertices );
+% % 
+% %         disp([ 'Running automated size exclusion vertex_curation for image ', ROI_names{ ROI_index }( 2 : end )])            
+% %         
+% %         if strcmp( vertex_curation, 'mutual edges' ) % !!!! failed method attempt SAM 5/21/21
+% %             
+% %             number_of_edges_per_vertex_for_curation = 2 ;
+% % 
+% %             % run the edge extraction step with only 2 edges per vertex
+% %             max_edge_energy = 0 ;
+% % 
+% %             [ edges2vertices, ~,       ...
+% %               edge_space_subscripts,   ...
+% %               edge_scale_subscripts,   ...
+% %               edge_energies          ] ...
+% %                     = get_edges_V300( lumen_radius_in_microns_range, vertex_scale_subscripts, vertex_space_subscripts, ...
+% %                                       3 / 4, number_of_edges_per_vertex_for_curation, max_edge_energy, ...
+% %                                       data_directory, [ energy_handle, ROI_names{ ROI_index }]);
+% %                                                      
+% %             is_not_really_mutual_but_iterative_terminal = true ;
+% %             
+% %             if is_not_really_mutual_but_iterative_terminal
+% % 
+% %     %             load('curate vertices workspace.mat')
+% % 
+% %                 minimum_number_of_edges_finding_a_vertex = 1 ;
+% % 
+% %                 vertex_uniques = unique( edges2vertices( :, 1 ))';            
+% % 
+% %                 is_vertex_chosen          = zeros( 1, numel( vertex_scale_subscripts ), 'logical' );
+% % 
+% %                 is_vertex_chosen_previous = ones(  1, numel( vertex_scale_subscripts ), 'logical' );
+% % 
+% %                 is_vertex_unique_chosen = ones( size( vertex_uniques ), 'logical' );
+% % 
+% %                 while true
+% % 
+% %                     is_vertex_chosen( vertex_uniques ) = is_vertex_unique_chosen ;     
+% % 
+% %                     % identify deleted vertices, remove edges that use them as origin vertices from the
+% %                     % edges2vertices look up table
+% %                     vertex_unique_eliminated = find( ~ is_vertex_chosen & is_vertex_chosen_previous );
+% % 
+% %                     is_vertex_chosen_previous = is_vertex_chosen ;
+% % 
+% %                     for vertex_unique = vertex_unique_eliminated
+% % 
+% %                         edges2vertices( edges2vertices( :, 2 ) == vertex_unique, 2 ) = 0 ;
+% % 
+% %                     end
+% % 
+% %                     edge_energies(  edges2vertices( :, 2 ) == 0, : ) = [ ];
+% % 
+% %                     edges2vertices( edges2vertices( :, 2 ) == 0, : ) = [ ];
+% % 
+% %                     vertex_uniques = vertex_uniques( is_vertex_unique_chosen );
+% % 
+% %                     is_looping = ~ isempty( vertex_unique_eliminated );
+% % 
+% %                     if ~ is_looping, break, end
+% % 
+% %                     is_vertex_unique_chosen = sum( vertex_uniques == edges2vertices( :, 1 )) ...
+% %                                             >= minimum_number_of_edges_finding_a_vertex ;
+% % 
+% %                 end            
+% %             end % IF mutual edges is misnomer            
+% %             
+% %             vertex_space_subscripts = vertex_space_subscripts( vertex_uniques, : );
+% %             vertex_scale_subscripts = vertex_scale_subscripts( vertex_uniques    );
+% %             vertex_energies         =         vertex_energies( vertex_uniques    );            
+% %             
+% %         end % IF 'mutual edges'
     end % IF isAuto
     
     switch vertex_curation
@@ -3153,7 +3367,8 @@ for ROI_index = ROI_index_range
                         'vertex_scale_subscripts'           , ...
                         'vertex_energies'                   , ...
                         'vertex_curation'                   , ...
-                        'vertex_curation_runtime_in_seconds'  );
+                        'vertex_curation_runtime_in_seconds', ...
+                        'chosen_vertex_indices'               );
                     
             else
                 
@@ -3582,7 +3797,7 @@ if productive( 4 )
         edges_runtime_in_seconds = toc ;
 
         disp([ 'Runtime for edges workflow for image ', ROI_names{ ROI_index }( 2 : end ), ' was ', num2str( round( edges_runtime_in_seconds )), ' seconds' ])
-                                                 
+           
         % saving edge outputs
         save(  path_to_edges            , ...
               'edge_energies'           , ...
@@ -3928,6 +4143,50 @@ if productive( 5 )
 %         edge_space_subscripts    = edge_space_subscripts( chosen_edge_indices );
 %         edge_scale_subscripts    = edge_scale_subscripts( chosen_edge_indices );
 %         edge_energies            = edge_energies(         chosen_edge_indices );        
+
+%         is_dilating_radii = true ;
+        is_dilating_radii = false ;
+
+        if is_dilating_radii
+
+            dilation_ratio_NumScales = log( 3 / 1.8 * 1.4 ) * scales_per_octave / log( 2 ); 
+
+            capillary_threshold = log( 10 / lumen_radius_in_microns_range( 1 )) / log( 2 ) * scales_per_octave ; % 10 micron radius [scales]
+            capillary_size      = log(  5 / lumen_radius_in_microns_range( 1 )) / log( 2 ) * scales_per_octave ; %  5 micron radius [scales]
+            
+            capillary_threshold = 3 * scales_per_octave ; % scales
+            capillary_size      = 2 * scales_per_octave ; 
+%             edge_scale_subscripts = cellfun( @( x ) x .* ( 1 + dilation_excess_ratio * exp( - x .^ 2 / 2 / capillary_threshold ^ 2 )), edge_scale_subscripts, 'UniformOutput', false );
+            edge_scale_subscripts = cellfun( @( x ) x + dilation_ratio_NumScales * exp( - max( 0, x - capillary_size ) .^ 2 / 2 / capillary_threshold ^ 2 ), edge_scale_subscripts, 'UniformOutput', false );
+
+        end
+
+%         is_cropping_edges = true ;
+        is_cropping_edges_y = false ;
+        
+        if is_cropping_edges_y
+        
+                   edges2vertices(find(cellfun( @( x ) max( x(:,1), [], 1), edge_space_subscripts)>843.5),:)=[];
+               mean_edge_energies(find(cellfun( @( x ) max( x(:,1), [], 1), edge_space_subscripts)>843.5)  )=[];
+            edge_scale_subscripts(find(cellfun( @( x ) max( x(:,1), [], 1), edge_space_subscripts)>843.5)  )=[];
+                    edge_energies(find(cellfun( @( x ) max( x(:,1), [], 1), edge_space_subscripts)>843.5)  )=[];
+            edge_space_subscripts(find(cellfun( @( x ) max( x(:,1), [], 1), edge_space_subscripts)>843.5)  )=[];
+
+        end
+
+%         is_cropping_edges_x = true ;
+        is_cropping_edges_x = false ;
+
+        if is_cropping_edges_x
+
+                   edges2vertices(cellfun( @( x ) max( x(:,2), [], 1), edge_space_subscripts)<326,:)=[];
+               mean_edge_energies(cellfun( @( x ) max( x(:,2), [], 1), edge_space_subscripts)<326  )=[];
+            edge_scale_subscripts(cellfun( @( x ) max( x(:,2), [], 1), edge_space_subscripts)<326  )=[];
+                    edge_energies(cellfun( @( x ) max( x(:,2), [], 1), edge_space_subscripts)<326  )=[];
+            edge_space_subscripts(cellfun( @( x ) max( x(:,2), [], 1), edge_space_subscripts)<326  )=[];
+
+        end
+        
                 
         [ bifurcation_vertices, ~,                                            ...
            edge_indices_in_strands, end_vertices_of_strands ]      = get_network_V190( edges2vertices );
@@ -3980,11 +4239,12 @@ if productive( 5 )
 % 
 %         network_runtime_in_seconds = sscanf( runtime_measurement_string( digit_indices( 1 ) : end ), '%f' );
 
+        network_statistics = calculate_network_statistics( strand_subscripts, bifurcation_vertices, lumen_radius_in_microns_range, microns_per_voxel, size_of_image );
+
         network_runtime_in_seconds = toc ;
 
         disp([ 'Runtime for network workflow for image ', ROI_names{ ROI_index }( 2 : end ), ' was ', num2str( round( network_runtime_in_seconds )), ' seconds' ])
                 
-        network_statistics = calculate_network_statistics( strand_subscripts, bifurcation_vertices, lumen_radius_in_microns_range, microns_per_voxel, size_of_image );
 
         % saving network outputs
         save(  path_to_network             , ...
@@ -4108,8 +4368,18 @@ if any( special_output )
 
     load( path_to_energy_settings )
 
-    for ROI_index = ROI_index_range
-                        
+%     is_overlaying_histos = false ; % do not overlay, even when multiple ROI's present
+    is_overlaying_histos = length( ROI_index_range ) > 1 ;
+    
+    if is_overlaying_histos && special_output( 1 ), figureHandle1 = figure ; ...
+                                                    figureHandle2 = figure ; end
+    
+    % breakpoint here for second and third overlays and run: is_overlaying_histos = true; figureHandle1 = 1; figureHandle2 = 2; 
+    for ROI_index = ROI_index_range 
+        %% front matter
+
+        original_ROI_handle = [ original_data_handle, ROI_names{ ROI_index }];
+
         path_to_original_data              = [   data_directory,                 original_data_handle, ROI_names{ ROI_index }]; % h5  file path        
         path_to_energy_data                = [   data_directory,                        energy_handle, ROI_names{ ROI_index }];           
         path_to_flow_field_export          = [   data_directory, 'flow_field_export_', network_handle, ROI_names{ ROI_index }]; % .mat file path for exporting to flow field calculation        
@@ -4118,7 +4388,7 @@ if any( special_output )
         
         path_to_saved_curation          = [ curation_directory, edges_handle, ROI_names{ ROI_index }];
         
-        strands_visual_spheres_file              = [ visual_vector_directory,  network_handle, '_strands_spheres',               ROI_names{ ROI_index }, '.tif' ];
+        strands_visual_spheres_file              = [ visual_vector_directory,  network_handle, '_strands_spheres',               ROI_names{ ROI_index }, '.tif' ]; 
         strands_visual_spheres_upsampled_file    = [ visual_vector_directory,  network_handle, '_strands_spheres_upsampled',     ROI_names{ ROI_index }, '.tif' ];
         strands_visual_centerline_upsampled_file = [ visual_vector_directory,  network_handle, '_strands_centerlines_upsampled', ROI_names{ ROI_index }, '.tif' ];              
         strands_visual_annuli_file               = [ visual_vector_directory,  network_handle, '_strands_annuli',                ROI_names{ ROI_index }, '.tif' ];
@@ -4129,47 +4399,493 @@ if any( special_output )
         
         try load( path_to_saved_curation, 'intensity_limits' ), end % if this fails, the intensity limits will be automatically chosen from earlier
         
-        %% network statistics (histograms)                                                          
+        %% cropping the strand objects to have center of masses inside a specified window
+        is_windowing = input( 'Enter "y" to window the analysis to a subset inside an ROI? [n]: ', 's' );
         
-        if special_output( 1 )
-            
-            is_windowing_in_z = false ;
-            
-            if is_windowing_in_z
-                
-%                 z_threshold_min = 0 ;                
-%                 z_threshold_max = 100 ;
-%                 z_threshold_min = 100 ;                
-%                 z_threshold_max = 200 ;
-                z_threshold_min = 200 ;                
-                z_threshold_max = 800 ; % previously 600 % SAM 4/23/22
-                
-                strand_ave_pos_z          = cellfun( @( x ) mean(   x( 2 : end    , 3 )                                 ...
-                                                                  + x( 1 : end - 1, 3 )) / 2 .* microns_per_voxel( 3 ), ...
-                                                       strand_subscripts );
-                                                   
-%                 bifurcation_vertex_space_subscripts = vertex_space_subscripts( bifurcation_vertices, : );
-                
-                is_strand_in_z_window = strand_ave_pos_z                    > z_threshold_min ...
-                                      & strand_ave_pos_z                    < z_threshold_max ;
-%                 is_vertex_in_z_window = bifurcation_vertex_space_subscripts > z_threshold_min ...
-%                                       & bifurcation_vertex_space_subscripts < z_threshold_max ;
-                
-                strand_subscripts    =    strand_subscripts( is_strand_in_z_window );
-%                 bifurcation_vertices = bifurcation_vertices( is_vertex_in_z_window );
+        if isempty( is_windowing  ), is_windowing  = false ; else, is_windowing  = strcmp('y',is_windowing  ); end
 
-                network_statistics = calculate_network_statistics( strand_subscripts, bifurcation_vertices, lumen_radius_in_microns_range, microns_per_voxel, size_of_image );
- 
+        if is_windowing
+            is_windowing_in_z  = input( 'Enter "y" to window in the  Z-dimension? [n]: ', 's' );
+
+            if isempty( is_windowing_in_z  ), is_windowing_in_z  = false ; else, is_windowing_in_z  = strcmp('y',is_windowing_in_z  ); end
+
+            if ~ is_windowing_in_z
+                is_windowing_in_r  = input( 'Enter "y" to window in the  r-dimension? [n]: ', 's' );
+
+                if isempty( is_windowing_in_r  ), is_windowing_in_r  = false ; else, is_windowing_in_r  = strcmp('y',is_windowing_in_r  ); end
+
+                if ~ is_windowing_in_r
+                      is_windowing_in_xy = input( 'Enter "y" to window in the xy-dimension? [n]: ', 's' ); % for close up of volume subset of Eddy, chronic SAM 10/31/22
+                else, is_windowing_in_xy = false ;
+                end
+            else
+                is_windowing_in_r  = false ;
+                is_windowing_in_xy = false ;
+            end
+            is_windowing_out = input( 'Enter "y" to analyze the out-of-window compliment instead [n]: ', 's' );
+        else
+            is_windowing_in_z  = false ;
+            is_windowing_in_r  = false ;
+            is_windowing_in_xy = false ;
+            is_windowing_out   = false ;
+        end
+
+        if isempty( is_windowing_in_xy ), is_windowing_in_xy = false ; else, is_windowing_in_xy = strcmp('y',is_windowing_in_xy ); end
+        if isempty( is_windowing_out   ), is_windowing_out   = false ; else, is_windowing_out   = strcmp('y',is_windowing_out   ); end
+
+        is_windowing = is_windowing_in_z ...
+                    || is_windowing_in_r ...
+                    || is_windowing_in_xy ;
+
+        origin_location = [ ];
+                             
+        if is_windowing
+
+            path_suffix = '';
+
+            if is_windowing_in_z , path_suffix = [ path_suffix, '__z_'    ]; end %#ok<AGROW> 
+            if is_windowing_in_r , path_suffix = [ path_suffix, '__r_'    ]; end %#ok<AGROW> 
+            if is_windowing_in_xy, path_suffix = [ path_suffix, '_xy_'    ]; end %#ok<AGROW> 
+                                   path_suffix = [ path_suffix, 'cropped' ];     %#ok<AGROW> 
+            path_to_network = [ path_to_network,   path_suffix            ];     %#ok<AGROW> 
+
+            if exist([ path_to_network, '.mat' ], 'file' ) 
+
+                is_loading_previous  = input([ 'Load the previous ', path_suffix, ' file found for, ', network_handle, ROI_names{ ROI_index }, '? Enter "n" to crop anew [y]: '], 's' );
+                if isempty( is_loading_previous ), is_loading_previous = true ; else, is_loading_previous = ~ strcmp('n',is_loading_previous ); end
+            
+            else
+
+                is_loading_previous = false ;
+
+            end
+
+            ROI_names{ ROI_index } = [ ROI_names{ ROI_index }, path_suffix ];
+
+            if ~ is_loading_previous
+
+                is_strand_in_window = ones( length( strand_subscripts ), 1 );
+        
+                if is_windowing_in_z
+
+                    is_selecting_z_limits = false ;
+                    
+    %                 z_threshold_min = 0 ;                
+    %                 z_threshold_max = 100 ;
+    %                 z_threshold_min = 100 ;                
+    %                 z_threshold_max = 200 ;
+                    z_threshold_min = 200 ;                
+                    z_threshold_max = 800 ; % previously 600 % SAM 4/23/22
+    % %             z_threshold_min = 200 ;                
+    % %             z_threshold_max = 600 ; % for close up of volume subset of Eddy, chronic
+                    
+                    strand_ave_pos_z          = cellfun( @( x ) mean(   x( 2 : end    , 3 )                                 ...
+                                                                      + x( 1 : end - 1, 3 )) / 2 .* microns_per_voxel( 3 ), ...
+                                                           strand_subscripts );
+                                                               
+                end
+
+                if is_windowing_in_r
+
+                    dimensionality = 3 ;
+        
+                    % !! hard-coded ROI selection
+                    is_selecting_origin       =  true ;
+                    is_selecting_inner_radius = false ;
+                    is_selecting_outer_radius = false ;
+        
+%                     % microns
+%                     inner_radius =  0  ;
+%                     outer_radius = inf ;
+
+                    % microns
+                    inner_radius =  0  ;
+                    outer_radius = 1000 ;
+
+                    origin_location = [ 1500, 800, 400 ]; % vxl subscripts in [y, x, z], for Chronic '21 Study: Brett wk 5 (also used for week 1) SAM August 22 !!!!!!! selecting origin in refernce to a landmark away from the infarct this is more reproducible SAM 5/21/23 
+                    
+        %                 network_statistics.strand_ave_d          = cellfun( @mean, strand_r );
+
+                    disp('Please select the center of the spherical window (from three 2D projections), then the inner-radius, and outer-radius (5 point-and-clicks, 3 double-click exits)')
+                                    
+                end
+                
+                if is_windowing_in_xy
+        
+                    dimensionality = 2 ;
+
+                    % !! hard-coded ROI selection  
+                    is_selecting_origin       = true  ;
+                    is_selecting_inner_radius = false ;
+                    is_selecting_outer_radius = false ;
+
+                %             fixed_outter_radius = 100 ; % microns
+                    inner_radius = 0   ;
+                    outer_radius = 124 ; % microns
+
+                    disp('Please select the center of the xy-cylinder window, the inner-radius, and outer-radius (3 point-and-clicks')
+
+                end
+
+                if is_windowing_in_z
+                    if ~ is_selecting_z_limits, disp(['!!! Z limits fixed at [ ', num2str( z_threshold_min ), ', ',...
+                                                                                  num2str( z_threshold_max ), ' ] microns !!!'])
+                        disp( '  ! This is hard-coded behavior that can be undone by setting the correct instance (ctrl+f) of "is_selecting_z_limits" to true in fxn: vectorize_V200() !' )
+                    end
+                end
+
+                if is_windowing_in_r || is_windowing_in_xy
+                            
+                    if ~ is_selecting_origin      , disp(['!!!       Origin is fixed at ', num2str( origin_location ), ' vxl subscripts in [ y, x, z ]!!!']), end
+                    if ~ is_selecting_inner_radius, disp(['!!! Inner radius is fixed at ', num2str(  inner_radius   ), ' microns !!!']), end
+                    if ~ is_selecting_outer_radius, disp(['!!! Outer radius is fixed at ', num2str(  outer_radius   ), ' microns !!!']), end
+                    if ~ is_selecting_inner_radius ...
+                    || ~ is_selecting_outer_radius ...
+                    || ~ is_selecting_origin      
+                        disp( '  ! This is hard-coded behavior that can be undone by setting the correct instance (ctrl+f) of ["is_selecting_",*] to true in fxn: vectorize_V200() ! (* = "inner_radius". "outer_radius", "origin_location")' )
+                    end
+                end
+
+                disp('Excerpt from the GETPTS MATLAB function documentation:' )
+                disp('    %GETPTS Select points with mouse.')
+                disp('    %   [X,Y] = GETPTS(FIG) lets you choose a set of points in the')
+                disp('    %   current axes of figure FIG using the mouse. Coordinates of')
+                disp('    %   the selected points are returned in the vectors X and Y. Use')
+                disp('    %   normal button clicks to add points.  A shift-, right-, or ')
+                disp('    %   double-click adds a final point and ends the selection.  ')
+                disp('    %   Pressing RETURN or ENTER ends the selection without adding') 
+                disp('    %   a final point.  Pressing BACKSPACE or DELETE removes the ')
+                disp('    %   previously selected point.')
+                disp( ' ')
+                disp( 'Loading original image for user to select ROI with the GETPTS tool...')
+
+                original_image = h52mat( path_to_original_data );
+    
+                if is_windowing_in_z
+
+                    original_image_2D = original_image( :,      round( size_of_image( 3 ) / 2 )     ...
+                                                          + ( - round( size_of_image( 3 ) / 4 )     ...
+                                                              : round( size_of_image( 3 ) / 4 )), : );
+
+                    original_image_2D = squeeze( max( original_image_2D, [ ], 2 )); % Max intensity projection in X
+                    
+                end
+
+                if is_windowing_in_xy
+
+                    original_image_2D = original_image( :, :,       round( size_of_image( 3 ) / 2 )...
+                                                              + ( - round( size_of_image( 3 ) / 4 )...
+                                                                  : round( size_of_image( 3 ) / 4 )));
+
+                    original_image_2D = squeeze( max( original_image_2D, [ ], 3 )); % Max intensity projection in Z
+
+                end
+
+                if is_windowing_in_xy || is_windowing_in_z
+
+                    clear original_image
+    
+                    intensity_limits = quantile( double( original_image_2D( : )), [ 0.01, 0.99 ]);
+            
+                    h1 = figure ; imshow( original_image_2D, intensity_limits )
+
+                    [ ptsx, ptsy ] = getpts(h1);
+        
+                    pxls = [ ptsy, ptsx ];
+        
+                end
+                
+                if is_windowing_in_z
+                    if is_selecting_z_limits
+
+                        z_threshold_min =   microns_per_voxel( 3 ) * pxls( 1, 2 ) ; 
+                        z_threshold_max =   microns_per_voxel( 3 ) * pxls( 2, 2 ) ; 
+
+                    end
+                end
+
+                if is_windowing_in_r
+
+                    pxls = zeros( 0, 2 );
+
+                    for projection_direction_idx = 1 : 3
+
+                        original_image_temp = permute( original_image, mod( projection_direction_idx - 1 : projection_direction_idx + 1, 3 ) + 1 );
+
+%                         original_image_2D = squeeze( max( original_image_temp(       round( size_of_image( 3 ) / 2 )...
+%                                                                                + ( - round( size_of_image( 3 ) / 3 )...
+%                                                                                    : round( size_of_image( 3 ) / 3 )), :, : ), [ ], 1 )); % Max intensity projection in Y, X, then Z
+                        original_image_2D = squeeze( max( original_image_temp( :, :, : ), [ ], 1 )); % Max intensity projection in Y, X, then Z
+
+                        if projection_direction_idx == 3, original_image_2D = original_image_2D' ; end
+
+                        intensity_limits = quantile( double( original_image_2D( : )), [ 0.01, 0.99 ]);
+                
+                        original_image_2D = padarray( original_image_2D, 100 * [ 1, 1 ], quantile( double( original_image_2D( : )), 0.99 ));
+
+                        h1(projection_direction_idx) = figure ; imshow( original_image_2D', intensity_limits ); hold on; 
+
+                        if projection_direction_idx == 2
+                            plot(h1(projection_direction_idx).Children,pxls([1,1]),...
+                                                                       [0,size( original_image_2D, 2 )],'r');
+                        end
+
+                        if projection_direction_idx == 3
+                            plot(h1(projection_direction_idx).Children,pxls(1,[2,2]),...
+                                                                       [0,size( original_image_2D, 2 )],'r');
+                            plot(h1(projection_direction_idx).Children,[0,size( original_image_2D, 1 )],...
+                                                                       pxls(2,[1,1]),'r');
+                        end                            
+
+
+%                         h1 = figure ; imshow( original_image_2D, intensity_limits, 'Border', 'loose', 'InitialMagnification', 50 )
+%                         truesize( h1, round( size( original_image_2D ) / 2 ))
+
+                        [ ptsx, ptsy ] = getpts(h1(projection_direction_idx));
+            
+                        pxls =[     pxls     ; ...
+                               [ ptsy, ptsx ]];
+
+                    end
+
+                    clear original_image original_image_temp
+
+                end
+
+                if is_windowing_in_xy
+                    if is_selecting_origin
+
+                        origin_location =        [ round( pxls( 1, : )), inf ]; % inf on 3rd coordinate is code for 2D dimensionality for downstream statistic compuations
+
+                    end
+                end
+                if is_windowing_in_r
+                    if is_selecting_origin
+
+                        origin_location = zeros( 1, 3 );
+                        
+                        projection_direction_counter = 0 ;
+
+                        for projection_direction_idx = 1 : - 1 : - 1 % Y, X, Z projections, end on Z for selecting radius
+    
+                            projection_direction_counter = projection_direction_counter  + 1 ;
+
+                            if projection_direction_counter ~= 3
+
+                                pxls_permuted = [ 0, pxls( projection_direction_counter, [ 2, 1 ])];                                
+
+                            else
+
+                                pxls_permuted = [ 0, pxls( projection_direction_counter, : )];
+
+                            end
+                            origin_location = origin_location + pxls_permuted( mod( projection_direction_idx - 1 : projection_direction_idx + 1, 3 ) + 1 );
+    
+                        end
+    
+                        origin_location = round( origin_location / 2 ); % omitting each orthogonal axis from the averaging
+
+                        for projection_direction_idx = 1 : 3
+
+                            if projection_direction_idx == 3
+                                plot(h1(projection_direction_idx).Children,origin_location(mod( projection_direction_idx + 1, 3 ) + 1 ),...
+                                                                           origin_location(mod( projection_direction_idx    , 3 ) + 1 ),'r+', 'MarkerSize', 50);
+                            else
+                                plot(h1(projection_direction_idx).Children,origin_location(mod( projection_direction_idx    , 3 ) + 1 ),...
+                                                                           origin_location(mod( projection_direction_idx + 1, 3 ) + 1 ),'r+', 'MarkerSize', 50);
+                            end
+                            getpts(h1(projection_direction_idx));
+                            close( h1(projection_direction_idx))
+                        end
+
+%                         origin_location = origin_location([ 2, 1, 3 ]);                        
+
+                        origin_location = origin_location - 100 ;
+                        
+                                                
+                    end
+                end
+
+                if is_windowing_in_r || is_windowing_in_xy
+                    if is_selecting_inner_radius
+
+            %                 inner_radius = 0 ;
+                        inner_radius = sum(( microns_per_voxel .* (             pxls( end - 1, : )                ...
+                                                                   - origin_location(   1 : 2    ))) .^ 2, 2 ) .^ 0.5 ; % microns
+
+                    end                    
+                    if is_selecting_outer_radius
+        
+            %                 outer_radius = inf ;
+                        outer_radius = sum(( microns_per_voxel .* (             pxls( end    , : )                ...
+                                                                   - origin_location(   1 : 2    ))) .^ 2, 2 ) .^ 0.5 ; % microns
+%                     else, outer_radius = outer_radius ;
+                    end
+                end
+
+                disp('Re-calculating network statistics on ROI subset of strands...')
+
+                if is_windowing_in_z
+        %                 bifurcation_vertex_space_subscripts = vertex_space_subscripts( bifurcation_vertices, : );
+                    
+%                     is_strand_in_window = is_strand_in_window ... % this AND operant is redundant but adds readability
+%                                         & strand_ave_pos_z                    > z_threshold_min ...
+%                                         & strand_ave_pos_z                    < z_threshold_max ;
+%         %                 is_vertex_in_z_window = bifurcation_vertex_space_subscripts > z_threshold_min ...
+%         %                                       & bifurcation_vertex_space_subscripts < z_threshold_max ;
+
+                    % SAM 7/6/23, overloading this feature to stand for z-orientation (not Z-position)
+                    z_threshold_min = 0.5 ^ 0.5 ;
+                    is_strand_in_window = network_statistics.strand_z_direction > z_threshold_min ;
+                    z_threshold_max = 1 ;
+                end
+                
+                if is_windowing_in_r || is_windowing_in_xy
+                
+% %                     stopper here and run this line if you selected the large descending vessel at the top of the image to register the infarct for Brett series images % SAM 230316
+%                     origin_location = origin_location + [ 845    10   222 ];
+% % % %                                Origin location: [  179   328   230 ] vxl subscripts in [ y, x, z ] %%% for Dwight week 5 % infarct center
+% % % %                             -  Origin location: [ 1157   667    11 ] vxl subscripts in [ y, x, z ] %%% for Dwight week 5 % large vertical vessel where it meets the surface in the south east of the top ortho image
+%                     origin_location = origin_location + [ -978  -339   219 ];
+% % % % % % %                                Origin location: [ 1463   215   241 ] vxl subscripts in [ y, x, z ] %%% for Ant    week 5 % infarct center
+% % % % % % %                             -  Origin location: [ 393    652    11 ] vxl subscripts in [ y, x, z ] %%% for Ant    week 5 % large vertical vessel in the North East of the ortho Z image between the first and second row of tiled images
+% % % %                       origin_location = origin_location + [ 1070 -437 230 ];
+% % % %                                Origin location: [ 1463   215   241 ] vxl subscripts in [ y, x, z ] %%% for Ant    week 5 % infarct center
+% % % %                             -  Origin location: [  876   446    13 ] vxl subscripts in [ y, x, z ] %%% for Ant    week 5 % Large surfce vessel Y-shaped bifurcation relatively near the infarct
+%                       origin_location = origin_location + [ 587  -231   228 ];
+                    network_statistics = calculate_network_statistics( strand_subscripts, bifurcation_vertices, lumen_radius_in_microns_range, microns_per_voxel, size_of_image, origin_location );                
+                
+                    is_strand_in_window = is_strand_in_window ...
+                                        & network_statistics.strand_ave_d > inner_radius ...
+                                        & network_statistics.strand_ave_d < outer_radius ;
+
+                end
+
+                     path_to_network_temp =      path_to_network ;
+                   strand_subscripts_temp =    strand_subscripts ;
+                   vessel_directions_temp =    vessel_directions ;
+                mean_strand_energies_temp = mean_strand_energies ;
+
+                for idx = 1 : 2
+    
+                    is_strand_in_window = ~ is_strand_in_window ;
+
+                    if idx == 1, path_to_network = [ path_to_network_temp, '_out' ] ; ...
+                    else,        path_to_network =   path_to_network_temp           ; end
+
+                    strand_subscripts    =    strand_subscripts_temp( is_strand_in_window );
+                    vessel_directions    =    vessel_directions_temp( is_strand_in_window );
+            %             bifurcation_vertices = bifurcation_vertices( is_vertex_in_z_window );
+                    mean_strand_energies = mean_strand_energies_temp( is_strand_in_window );
+
+                    is_empty_ROI = isempty( strand_subscripts );
+
+                    if ~ is_empty_ROI
+                    
+                        % recalculate network statistics for the restricted subset
+                        network_statistics = calculate_network_statistics( strand_subscripts, bifurcation_vertices, lumen_radius_in_microns_range, microns_per_voxel, size_of_image, origin_location );                
+                
+                                             save( path_to_network, 'network_statistics', ...
+                                                                     'strand_subscripts', ...
+                                                                     'vessel_directions', ...
+                                                                  'mean_strand_energies'  )
+            
+                        if is_windowing_in_z
+                                             save( path_to_network, 'z_threshold_min',            ...
+                                                                    'z_threshold_max', '-append' )
+                        end
+                        if is_windowing_in_r   ...
+                        || is_windowing_in_xy               
+                                             save( path_to_network, 'inner_radius',            ...
+                                                                    'outer_radius',            ...
+                                                                    'origin_location',            ...
+                                                                    'dimensionality', '-append' )
+                        end
+                    end
+                end
+%             else % loading previous crop
+% 
+%                 load( path_to_network )
+% 
+            end % is not loading previous (cropping anew)
+    
+            if is_windowing_out, path_to_network = [        path_to_network, '_out' ]; ...
+                          ROI_names{ ROI_index } = [ ROI_names{ ROI_index }, '_out' ]; end %#ok<AGROW> 
+
+            load( path_to_network ) %#ok<LOAD> 
+
+            if is_windowing_in_r || is_windowing_in_xy
+    
+                disp(['    Origin location: [ ', num2str( origin_location ), ' ] vxl subscripts in [ y, x, z ]'])
+                disp(['Inner radius length:   ', num2str(  inner_radius   ), ' microns'])
+                disp(['Outer radius length:   ', num2str(  outer_radius   ), ' microns'])
+
+            end
+            if is_windowing_in_z
+
+                disp(['Depth lower limit [microns]:', num2str( z_threshold_min )])
+                disp(['Depth upper limit [microns]:', num2str( z_threshold_max )])
+
             end
             
-            number_of_bins = 15 ;
-            area_histogram_plotter( strand_subscripts, lumen_radius_in_microns_range, microns_per_voxel, size_of_image, number_of_bins, ROI_names{ ROI_index }( 2 : end ), network_handle );            
+
+        end % if is_windowing
+
+        %% area and network statistics (histograms)                                                          
+        if special_output( 1 )
             
+            number_of_bins = 15 ;         
+
+            % breakpoint here to generate histo overlays between datasets (not ROI's within a dataset)
+% %             is_overlaying_histos= true ; figureHandle1=figure ; figureHandle2=figure ; %SAM5/31/22 for ease of plot geneeration of chronic histo overlay
+%             is_overlaying_histos= true ; figureHandle1=20 ; figureHandle2=21 ; %SAM5/31/22 for ease of plot geneeration of chronic histo overlay
+            if is_overlaying_histos, set(0, 'CurrentFigure', figureHandle1), color_index = mod( ROI_index, 3 );
+            else, figure, color_index = 4 ; 
+            end
+                
+%             color_index = mod((str2num(ROI_names{1}(18))-1)/2+1,3); %SAM5/31/22 for ease of plot geneeration of chronic histo overlay
+% % %             color_index = mod((sscanf(ROI_names{1},'%d')-1)/2+1,3); %SAM5/31/22 for ease of plot geneeration of chronic histo overlay
+
+            switch color_index % breakpoint here for overlaying second, and third plots to set the color_index to 2 for green, 3 for blue...
+%                 case 1, plot_color = [ 1/2, 3/4,  1  ];
+%                 case 2, plot_color = [  1 , 1/2, 3/4 ];
+%                 case 0, plot_color = [ 3/4,  1 , 1/2 ];
+%                 case 4, plot_color = [  0 ,  0 ,  0  ];
+                case 1, plot_color = [ 1, 0, 0 ];
+                case 2, plot_color = [ 0, 1, 0 ];
+                case 3, plot_color = [ 0, 0, 1 ];
+                case 0, plot_color = [ 0, 0, 1 ];
+                case 4, plot_color = [ 0, 0, 0 ];
+                case 5, plot_color = [ 1, 0, 0.5 ];
+                case 6, plot_color = [ 0, 1, 0.5 ];
+                case 7, plot_color = [ 1, 1, 1 ] * 2/3 ;
+                case 8, plot_color = [ 1, 1, 1 ] * 1/2 ;
+                    
+            end            
+
+            [ delta_length, radius, distance, orientation, x, pdf, cdf ] = area_histogram_plotter( strand_subscripts, lumen_radius_in_microns_range, microns_per_voxel, size_of_image, number_of_bins, ROI_names{ ROI_index }( 2 : end ), network_handle, plot_color, origin_location );
+            
+%             % ???? inspect weights... add samples so that all have approx. same weight
+%             min( weight ) / max( weight )
+%             median( weight )
+%             % !!!!! calling each weight one, regardless of length (or area)
+
+            NumStrands = length( strand_subscripts );   
+
+            % save samples to do Kolmogorov Smirnov statistical testing and length and NumStrands tracking between datasets
+            save([ path_to_network, '_decomposed_stats' ], 'delta_length', 'radius', 'distance', 'orientation', 'NumStrands', 'x', 'pdf', 'cdf' )
+
             statistics_to_plot = { }; % code for default: all statistics listed
 %             number_of_bins = 10 ;
-            number_of_bins = 40 ;
-            network_histogram_plotter( network_statistics, statistics_to_plot, number_of_bins, ROI_names{ ROI_index }( 2 : end ), network_handle )
-                            
+%             number_of_bins = 40 ;
+            number_of_bins = 10 ;
+            
+            if is_overlaying_histos, set(0, 'CurrentFigure', figureHandle2)
+            else, figure
+            end
+            
+            network_histogram_plotter( network_statistics, statistics_to_plot, number_of_bins, ROI_names{ ROI_index }( 2 : end ), network_handle, plot_color )
+
         end        
         %% flow field export (flow-field)                                                           
         
@@ -4221,7 +4937,8 @@ if any( special_output )
             [ flow_field, tissue_type_image ] = flow_field_subroutine( path_to_flow_field_export );
                              
         end % IF exporting        
-        %% 2D depth visualization, red to white gradient (depth)                                    
+        
+        %% if the strands have been cropped, then set crop limits for 2D projections 
         
         is_inverted_original = false ;
         
@@ -4233,21 +4950,54 @@ if any( special_output )
 %        size_dilation = 0.5 ;
          size_dilation = 1 ;
         
-%         y_crop_limits = [ 1, size_of_image( 1 )];
-%         x_crop_limits = [ 1, size_of_image( 2 )];
+% %         y_crop_limits = [ 1, size_of_image( 1 )];
+% %         x_crop_limits = [ 1, size_of_image( 2 )];
 
-        y_crop_limits = round([ size_of_image( 1 ) / 3, 2 *size_of_image( 1 ) / 3 ]);
-        x_crop_limits = round([ size_of_image( 2 ) / 3, 2 *size_of_image( 2 ) / 3 ]);
-
-
-        slice_index_range = ( 1 : number_of_slices )' ;
+%         y_crop_limits = round([ size_of_image( 1 ) / 3, 2 *size_of_image( 1 ) / 3 ]);
+%         x_crop_limits = round([ size_of_image( 2 ) / 3, 2 *size_of_image( 2 ) / 3 ]);
+%         z_crop_limits = 1 + round([( size_of_image( 3 ) - 1 ) / 3 , 2 * ( size_of_image( 3 ) - 1 ) / 3 ]);
         
+
+        y_crop_limits = [1,size_of_image(1)]; % SAM 7/3/23
+        x_crop_limits = [1,size_of_image(2)]; % SAM 7/3/23
+        z_crop_limits = [1,size_of_image(3)]; % SAM 7/3/23
+
+        if is_windowing_in_xy ...
+        || is_windowing_in_r,  y_crop_limits = origin_location( 1 ) + [ - round( 4 / 3 * outer_radius / microns_per_voxel( 1 )), ...
+                                                                          round( 4 / 3 * outer_radius / microns_per_voxel( 1 ))]; 
+                               x_crop_limits = origin_location( 2 ) + [ - round( 4 / 3 * outer_radius / microns_per_voxel( 2 )), ...
+                                                                          round( 4 / 3 * outer_radius / microns_per_voxel( 2 ))];
+% %                                x_crop_limits = origin_location( 2 ) + [ - round( 1 / 6 * outer_radius / microns_per_voxel( 2 )), ...
+% %                                                                           round( 1 / 6 * outer_radius / microns_per_voxel( 2 ))];
+%                                x_crop_limits = origin_location( 2 ) + [ - round( 1 / 12 * outer_radius / microns_per_voxel( 2 )), ...
+%                                                                           round( 1 / 12 * outer_radius / microns_per_voxel( 2 ))];
+
+                               y_crop_limits( 1 ) = max(       1           , y_crop_limits( 1 ));
+                               y_crop_limits( 2 ) = min( size_of_image( 1 ), y_crop_limits( 2 ));
+                               x_crop_limits( 1 ) = max(       1           , x_crop_limits( 1 ));
+                               x_crop_limits( 2 ) = min( size_of_image( 2 ), x_crop_limits( 2 ));
+                               % all of Z dimension
+                               z_crop_limits      = [ 1, size_of_image( 3 )                    ];
+        end
+%         if is_windowing_in_r , z_crop_limits = origin_location( 3 ) + [ - round( 4 / 3 * outer_radius / microns_per_voxel( 3 )), ...
+%                                                                           round( 4 / 3 * outer_radius / microns_per_voxel( 3 ))]; 
+% %         if is_windowing_in_r , z_crop_limits = origin_location( 3 ) + [ - round( 1 / 3 * outer_radius / microns_per_voxel( 3 )), ...
+% %                                                                           round( 1 / 3 * outer_radius / microns_per_voxel( 3 ))]; 
+        if is_windowing_in_r , z_crop_limits = origin_location( 3 ) + [ - round( 6.5 / 10 * outer_radius / microns_per_voxel( 3 )), ...
+                                                                          round( 6.5 / 10 * outer_radius / microns_per_voxel( 3 ))]; 
+            
+                               z_crop_limits( 1 ) = max(       1           , z_crop_limits( 1 ));
+                               z_crop_limits( 2 ) = min( size_of_image( 3 ), z_crop_limits( 2 ));
+
+        end
+
+%         slice_index_range = ( 1 : number_of_slices )' ;
+%         
 %         z_crop_limits = [ round( size_of_image( 3 ) / number_of_slices * ( slice_index_range - 1 )) + 1,   ...
 %                           round( size_of_image( 3 ) / number_of_slices *   slice_index_range )          ];
                       
-        z_crop_limits = 1 + [ round(     ( size_of_image( 3 ) - 1 ) / 3 ), ...
-                              round( 2 * ( size_of_image( 3 ) - 1 ) / 3 )  ];                      
         
+        %% 2D     depth visualization,(depth)  red to white gradient                                    
         if special_output( 3 )
 
 %             visualize_depth_via_color_V200( strand_subscripts, mean_strand_energies,                         ...
@@ -4261,13 +5011,13 @@ if any( special_output )
                 visualize_strands_via_color_V200(                                                    ...
                         strand_subscripts, vessel_directions, mean_strand_energies,                  ...
                         lumen_radius_in_pixels_range, size_dilation,                                             ...
-                        data_directory, [ original_data_handle, ROI_names{ ROI_index }], network_handle,  ...
+                        data_directory, original_ROI_handle, network_handle,  ...
                         y_crop_limits, x_crop_limits, z_crop_limits( slice_index, : ), ...
                         intensity_limits, is_inverted_original, are_vectors_opaque, 'depth', microns_per_voxel )
 
             end            
         end
-        %% 2D strand visualization, random color assignment (strands)                               
+        %% 2D    strand visualization,(strands) random color assignment                                
         
         if special_output( 4 )
         %         number_of_strands = length( edge_indices_in_strands );
@@ -4290,65 +5040,162 @@ if any( special_output )
                 visualize_strands_via_color_V200(                                                    ...
                         strand_subscripts, vessel_directions, mean_strand_energies,                  ...
                         lumen_radius_in_pixels_range, size_dilation,                                             ...
-                        data_directory, [ original_data_handle, ROI_names{ ROI_index }], network_handle,  ...
+                        data_directory, original_ROI_handle, network_handle,  ...
                         y_crop_limits, x_crop_limits, z_crop_limits( slice_index, : ), ...
                         intensity_limits, is_inverted_original, are_vectors_opaque, 'strands', microns_per_voxel )
 
             end
         end
         %% 2D direction visualization (directions)                                                  
-        
         if special_output( 5 )
             
             for slice_index = 1 : number_of_slices 
 
+                
                 visualize_strands_via_color_V200(                                                    ...
                         strand_subscripts, vessel_directions, mean_strand_energies,                  ...
                         lumen_radius_in_pixels_range, size_dilation,                                             ...
-                        data_directory, [ original_data_handle, ROI_names{ ROI_index }], network_handle,  ...
+                        data_directory, original_ROI_handle, network_handle,  ...
                         y_crop_limits, x_crop_limits, z_crop_limits( slice_index, : ), ...
-                        intensity_limits, is_inverted_original, are_vectors_opaque, 'directions', microns_per_voxel )
+...                        intensity_limits, is_inverted_original, are_vectors_opaque, 'directions', microns_per_voxel )
+                        intensity_limits, is_inverted_original, are_vectors_opaque, 'z-directions', microns_per_voxel ) % SAM 7/3/23
 
             end            
         end
-        %% 3D strand or directions visualization (3D-strands | 3D-directions)                            
         
-        if special_output( 6 ) || special_output( 12 )
+        %% Z directional visualization (directions)                                                  
+        if is_windowing_in_z
+            for slice_index = 1 : number_of_slices 
+
+                special_output( 17 ) = true ;
+                special_output( 13 ) = true ;
+
+                visualize_strands_via_color_V200(                                                    ...
+                        strand_subscripts, vessel_directions, mean_strand_energies,                  ...
+                        lumen_radius_in_pixels_range, size_dilation,                                             ...
+                        data_directory, original_ROI_handle, network_handle,  ...
+                        y_crop_limits, x_crop_limits, z_crop_limits( slice_index, : ), ...
+                        intensity_limits, is_inverted_original, are_vectors_opaque, 'z-directions', microns_per_voxel )
+
+            end            
+        end
+
+        %% 3D sphere directional visualization (directions)                                                  
+        if is_windowing_in_r
+            for slice_index = 1 : number_of_slices 
+
+                special_output( 18 ) = true ;
+                special_output( 14 ) = true ;
+
+                % !!!!!!!!!!!!! substitute [ "orientation toward infarct", 0, "compliment" ] for vessel_directions !!!!!!                
+                visualize_strands_via_color_V200(                                                    ...
+                        strand_subscripts, vessel_directions, mean_strand_energies,                  ...
+                        lumen_radius_in_pixels_range, size_dilation,                                             ...
+                        data_directory, original_ROI_handle, network_handle,  ...
+                        y_crop_limits, x_crop_limits, z_crop_limits( slice_index, : ), ...
+                        intensity_limits, is_inverted_original, are_vectors_opaque, 'r-directions', microns_per_voxel, network_statistics.strand_r  )
+
+            end            
+        end
+
+        %% 2D xy cylinder directional visualization (directions)                                                  
+        if is_windowing_in_xy
+            for slice_index = 1 : number_of_slices 
+
+                special_output( 19 ) = true ;
+                special_output( 15 ) = true ;
+
+                % !!!!!!!!!!!!! substitute [ "orientation toward vessel", 0, "Z-component" ] for vessel_directions !!!!??? or replace 0 with the 1 or "Z-component" with "compliment" ????!!
+                visualize_strands_via_color_V200(                                                    ...
+                        strand_subscripts, vessel_directions, mean_strand_energies,                  ...
+                        lumen_radius_in_pixels_range, size_dilation,                                             ...
+                        data_directory, original_ROI_handle, network_handle,  ...
+                        y_crop_limits, x_crop_limits, z_crop_limits( slice_index, : ), ...
+                        intensity_limits, is_inverted_original, are_vectors_opaque, 'xy-directions', microns_per_voxel, network_statistics.strand_r )
+
+            end            
+        end
+
+
+        %% 3D           visualization ( 3D-depth | 3D-strands | 3D-directions | 3D-z-directions | 3D-r-directions | 3D-xy-directions | '3D-radii' )                            
+        
+        if special_output(  6 ) ...
+        || special_output( 12 ) ...
+        || special_output( 13 ) ...
+        || special_output( 14 ) ...
+        || special_output( 15 ) ...
+        || special_output( 16 ) ...
+        || special_output( 17 )
             
-            color_code_indices = [ 6  * special_output( 6  ), ...
-                                   12 * special_output( 12 )  ];
+            color_code_indices = [  6 * special_output(  6 ), ...
+                                   12 * special_output( 12 ), ...
+                                   13 * special_output( 13 ), ...
+                                   14 * special_output( 14 ), ...
+                                   15 * special_output( 15 ), ...
+                                   16 * special_output( 16 ), ...
+                                   17 * special_output( 17 )  ];
             
             for color_code_idx = color_code_indices
 
                 switch color_code_idx
-                    case 6 ,  color_code = 'strands'    ;
-                    case 12,  color_code = 'directions' ;
-                    otherwise color_code = 'none'       ;
+                    case  6,  color_code =       'strands' ;
+                    case 12,  color_code =    'directions' ;
+                    case 13,  color_code =  'z-directions' ; 
+                    case 14,  color_code =  'r-directions' ; 
+                    case 15,  color_code = 'xy-directions' ; 
+                    case 16,  color_code =         'depth' ; 
+                    case 17,  color_code =         'radii' ; 
+                    otherwise color_code =          'none' ;
                 end
                 
                 if ~ strcmp( color_code, 'none' )
             %         max_edge_energies( edge_junction_indices ) = 0 ; % to make image without junctions 
 
-                    number_of_slices = 2 ;
+%                     number_of_slices = 2 ;
+% 
+%                     resolution_factor = 0.75 ;
+%                     resolution_factor = 1.5 ;
+%                     resolution_factor = 1 ;
+%                     resolution_factor = 0.5 ;
+                    resolution_factor = 0.25 ;
+%                     resolution_factor = 0.125 ;
+% 
+%                     for slice_index = 1 : number_of_slices 
+% 
+%         %                 [ ~, longest_dimension ] = max( size_of_image .* microns_per_voxel );
+%         %                 
+%         %                 shorter_dims = setdif([ 1, 2, 3 ], longest_dimension );
+% 
+%                         visualize_strands_via_color_3D_V2(                                                     ...
+%                                 strand_subscripts,                                                             ...
+%         ...                        mean_strand_energies - max( mean_strand_energies ), microns_per_voxel( 1 ),    ...
+%                                 mean_strand_energies, min( microns_per_voxel ),    ...
+%                                 lumen_radius_in_pixels_range, resolution_factor,                                               ...
+%                                 [ round( size_of_image( 1 ) / number_of_slices ) * ( slice_index - 1 ) + 1,    ...
+%                                   round( size_of_image( 1 ) / number_of_slices ) *   slice_index            ], ...
+%                                 [ 1, size_of_image( 2 )], [ 1, size_of_image( 3 )], 0, ROI_names{ ROI_index }( 2 : end ), network_handle, color_code )
+% 
+%                     end
 
-                    resolution_factor = 0.75 ;
+% %                         strand_subscripts_mat = cell2mat( strand_subscripts );
+% %                      mean_strand_energies_mat =           strand_subscripts_mat( :, 1 ) * 0 - 1 ; % set all to -1
+% 
+%                         visualize_strands_via_color_3D_V2(                                                     ...
+%                                 strand_subscripts,      ...  
+%                                 vessel_directions, ...
+%                                 mean_strand_energies, ...
+%         ...                        mean_strand_energies - max( mean_strand_energies ), microns_per_voxel( 1 ),    ...
+%                ...                 mean_strand_energies_mat, ...
+%                                 min( microns_per_voxel ),    ...
+%                                 lumen_radius_in_pixels_range, resolution_factor,                                               ...
+%                                 y_crop_limits, x_crop_limits, z_crop_limits, ...
+%                                 0, ROI_names{ ROI_index }( 2 : end ), network_handle, color_code, true )
 
-                    for slice_index = 1 : number_of_slices 
+                        if ~ isfield( network_statistics, 'strand_r' ), network_statistics.strand_r = { }; end
 
-        %                 [ ~, longest_dimension ] = max( size_of_image .* microns_per_voxel );
-        %                 
-        %                 shorter_dims = setdif([ 1, 2, 3 ], longest_dimension );
-
-                        visualize_strands_via_color_3D_V2(                                                     ...
-                                strand_subscripts,                                                             ...
-        ...                        mean_strand_energies - max( mean_strand_energies ), microns_per_voxel( 1 ),    ...
-                                mean_strand_energies, min( microns_per_voxel ),    ...
-                                lumen_radius_in_pixels_range, resolution_factor,                                               ...
-                                [ round( size_of_image( 1 ) / number_of_slices ) * ( slice_index - 1 ) + 1,    ...
-                                  round( size_of_image( 1 ) / number_of_slices ) *   slice_index            ], ...
-                                [ 1, size_of_image( 2 )], [ 1, size_of_image( 3 )], 0, ROI_names{ ROI_index }( 2 : end ), network_handle, color_code )
-
-                    end
+                        visualize_strands_via_color_3D_V3( strand_subscripts, vessel_directions,                 ...
+                                                           microns_per_voxel, lumen_radius_in_microns_range,     ...
+                                                           resolution_factor, vector_directory, ROI_names{ ROI_index }( 2 : end ), network_handle, color_code, network_statistics.strand_r )
                 end
             end
         end      
@@ -4361,11 +5208,12 @@ if any( special_output )
             
 %             [ strands2vertices ] = fix_strand_vertex_mismatch( vertex_space_subscripts, strand_subscripts, strands2vertices );
             
-            [ point_coordinates, arc_connectivity, arc_diameters ] = strand2casx( strand_subscripts, microns_per_voxel, lumen_radius_in_microns_range );
+            [ point_coordinates, arc_connectivity, arc_diameters, point_radii ] = strand2casx( strand_subscripts, microns_per_voxel, lumen_radius_in_microns_range );
         
-            save([ path_to_network, '_casX' ], 'point_coordinates', 'arc_connectivity', 'arc_diameters' );
+            save([ path_to_network, '_casX' ], 'point_coordinates', 'arc_connectivity', 'arc_diameters', 'point_radii' );
             
-            casx_mat2file([ path_to_network, '.casx' ], point_coordinates, arc_connectivity, arc_diameters )
+%             casx_mat2file([ path_to_network, '.casx' ], point_coordinates, arc_connectivity, arc_diameters ) % outdated version of casx
+            casx_V2_mat2file([ path_to_network, '_casX' ], point_coordinates, arc_connectivity, arc_diameters, point_radii )
             
         end % IF exporting_casX_file
         %% upsampled rendering (upsampled)                                                          
@@ -4600,7 +5448,23 @@ end % IF visual
 
     function [ validation_flag, special_output ] = validate_special_output( x )
         
-        SpecialOutput_core_values = { 'histograms', 'flow-field', 'depth', 'strands', 'directions', '3D-strands', 'casX', 'upsampled', 'depth-stats', 'vmv', 'original-stats', '3D-directions' };
+        SpecialOutput_core_values = { 'histograms', ...
+                                      'flow-field', ...
+                                           'depth', ...
+                                         'strands', ...
+                                      'directions', ...
+                                      '3D-strands', ...
+                                            'casX', ...
+                                       'upsampled', ...
+                                     'depth-stats', ...
+                                             'vmv', ...
+                                  'original-stats', ...
+                                   '3D-directions', ...
+                                 '3D-z-directions', ...
+                                 '3D-r-directions', ...
+                                '3D-xy-directions', ...
+                                        '3D-depth', ...
+                                        '3D-radii'  };
         
         SpecialOutput_values = [{ 'none' }, SpecialOutput_core_values, { 'all' }];
 
